@@ -12,6 +12,8 @@ kicad-cli pcb export gerbers \
   --output "$OUT/" \
   --layers F.Cu,B.Cu,F.SilkS,B.SilkS,F.Mask,B.Mask,Edge.Cuts \
   --subtract-soldermask \
+  --no-x2 \
+  --no-netlist \
   garage_carrier.kicad_pcb
 
 # Файлы сверловки: Excellon, метрические, PTH и NPTH раздельно (JLC понимает оба варианта)
@@ -20,8 +22,6 @@ kicad-cli pcb export drill \
   --format excellon \
   --drill-origin absolute \
   --excellon-units mm \
-  --generate-map \
-  --map-format gerberx2 \
   garage_carrier.kicad_pcb
 
 # Упаковка: JLCPCB принимает один zip
