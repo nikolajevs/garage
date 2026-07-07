@@ -1,20 +1,21 @@
 #include <Arduino.h>
 #include <MyLD2410.h>
-#include <PN532_HSU.h>
-#include <PN532.h>
+#include <SPI.h>
+#include <MFRC522.h>
 
 // ================= ПИНЫ =================
 #define LD2410_RX 16
 #define LD2410_TX 17
-#define RFID_RX   4
-#define RFID_TX   5
-#define SIREN_PIN 18
+#define RC522_SS   5
+#define RC522_RST  4
+// SPI (SCK/MOSI/MISO) - аппаратные пины ESP32: GPIO18/23/19
+#define SIREN_PIN 32   // сирену перенесли с GPIO18, т.к. он занят под аппаратный SPI (SCK)
 #define LED_PIN   2
 
 // ================= НАСТРОЙКИ =================
 const String authorizedUIDs[] = {
-  "4.123.45.67",     // ← Замени на реальные UID
-  "12.34.56.78"
+  "04A1B2C3",     // ← Замени на реальные UID своих карт (формат HEX, см. Serial Monitor)
+  "9F8E7D6C"
 };
 const int numAuthorized = sizeof(authorizedUIDs) / sizeof(authorizedUIDs[0]);
 
@@ -33,17 +34,16 @@ unsigned long lastRFIDReadTime = 0;
 
 // ================= УСТРОЙСТВА =================
 MyLD2410 radar(Serial2);
-HardwareSerial RFIDSerial(1);
-PN532_HSU pn532hsu(RFIDSerial);
-PN532 nfc(pn532hsu);
+MFRC522 rfid(RC522_SS, RC522_RST);
 
 // ================= HELPERS =================
-String uidToString(uint8_t* uid, uint8_t len) {
+String uidToString(byte* uid, byte len) {
   String s = "";
-  for (uint8_t i = 0; i < len; i++) {
-    if (i) s += ".";
-    s += String(uid[i]);
+  for (byte i = 0; i < len; i++) {
+    if (uid[i] < 0x10) s += "0";
+    s += String(uid[i], HEX);
   }
+  s.toUpperCase();
   return s;
 }
 
@@ -75,18 +75,19 @@ void setup() {
   Serial2.begin(256000, SERIAL_8N1, LD2410_RX, LD2410_TX);
   radar.begin();
 
-  RFIDSerial.begin(115200, SERIAL_8N1, RFID_RX, RFID_TX);
-  nfc.begin();
+  SPI.begin(); // SCK=18, MISO=19, MOSI=23 по умолчанию на ESP32
+  rfid.PCD_Init();
 
-  uint32_t version = nfc.getFirmwareVersion();
-  if (!version) {
-    Serial.println("PN532 not found!");
+  byte version = rfid.PCD_ReadRegister(rfid.VersionReg);
+  if (version == 0x00 || version == 0xFF) {
+    Serial.println("RC522 not found!");
     while (1) {
       digitalWrite(LED_PIN, !digitalRead(LED_PIN));
       delay(200);
     }
   }
-  nfc.SAMConfig();
+  Serial.print("RC522 OK, version 0x");
+  Serial.println(version, HEX);
   Serial.println("Garage Alarm READY | Cards: " + String(numAuthorized));
 }
 
@@ -94,27 +95,28 @@ void setup() {
 void checkRFID() {
   if (millis() - lastRFIDReadTime < RFID_DEBOUNCE_MS) return;
 
-  uint8_t uid[7] = {0};
-  uint8_t len = 0;
+  if (!rfid.PICC_IsNewCardPresent()) return;
+  if (!rfid.PICC_ReadCardSerial()) return;
 
-  if (nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &len, 50)) {
-    String tag = uidToString(uid, len);
-    Serial.println("TAG: " + tag);
+  String tag = uidToString(rfid.uid.uidByte, rfid.uid.size);
+  Serial.println("TAG: " + tag);
 
-    if (isAuthorized(tag)) {
-      if (state == DISARMED) {
-        setState(EXIT_DELAY);
-      } else {
-        setState(DISARMED);
-      }
-      digitalWrite(SIREN_PIN, HIGH);
-      delay(150);
-      digitalWrite(SIREN_PIN, LOW);
-      lastRFIDReadTime = millis();
+  if (isAuthorized(tag)) {
+    if (state == DISARMED) {
+      setState(EXIT_DELAY);
     } else {
-      Serial.println("Access DENIED");
+      setState(DISARMED);
     }
+    digitalWrite(SIREN_PIN, HIGH);
+    delay(150);
+    digitalWrite(SIREN_PIN, LOW);
+    lastRFIDReadTime = millis();
+  } else {
+    Serial.println("Access DENIED");
   }
+
+  rfid.PICC_HaltA();
+  rfid.PCD_StopCrypto1();
 }
 
 // ================= LOOP =================
